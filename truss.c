@@ -4,6 +4,9 @@
 #include <sys/uio.h>
 #include <sys/ktrace.h>
 #include <sys/queue.h>
+#include <sys/syscall.h>
+
+// #include <kern/syscalls.c>
 
 #include <err.h>
 #include <limits.h>
@@ -12,46 +15,80 @@
 #include <string.h>
 #include <unistd.h>
 
-#include "truss.h"
-
 #define PID_MAX SHRT_MAX
 
+/* Argument types. */
 #define AT_FD	0
 #define AT_SC	1
 #define AT_SIG	2
-#define AT_MF	3
 
-void add_arg(int, struct arg_head *, char *);
-void loop(int);
-void pr_psig(struct ktr_psig *);
-void pr_syscall(struct ktr_syscall *);
-void trace(void);
-void usage(void) __attribute__((__noreturn__));
+/* Date formats. */
+#define DFMT_NONE	0
+#define DFMT_ABS	1
+#define DFMT_REL	2
 
-pid_t	 attach_pid;
-int	 show_count;
-int	 show_args;
-int	 show_env;
-int	 show_intr_once;
-int	 datefmt;
-char	*outfn;
-FILE	*outfp;
+/* Command-line argument list. */
+struct arg {
+	union {
+		char	*argv_str;
+		int	 argv_int;
+	} arg_value;
+	SLIST_ENTRY(arg) arg_next;
+#define arg_fd	 arg_value.argv_int
+#define arg_sc	 arg_value.argv_str
+#define arg_sig	 arg_value.argv_str
+};
 
-struct arg_head	hd_sc_show, hd_sc_xshow;
-struct arg_head hd_sc_stop, hd_sc_xstop;
-struct arg_head hd_sc_verbose, hd_sc_xverbose;
-struct arg_head hd_sc_raw, hd_sc_xraw;
-struct arg_head hd_sig_show, hd_sig_xshow;
-struct arg_head hd_sig_stop, hd_sig_xstop;
-struct arg_head hd_mf_show, hd_mf_xshow;
-struct arg_head hd_mf_stop, hd_mf_xstop;
-struct arg_head hd_fd_read, hd_fd_xread;
-struct arg_head hd_fd_write, hd_fd_xwrite;
+SLIST_HEAD(arg_head, arg);
+
+struct ktr_event {
+	struct ktr_header		ktrev_hdr;
+	union {
+		struct ktr_syscall	ktrevu_syscall;
+		struct ktr_psig		ktrevu_psig;
+		unsigned char		ktrevu_udata[1];
+	} ktrev_data;
+#define ktrev_syscall	ktrev_data.ktrevu_syscall
+#define ktrev_psig	ktrev_data.ktrevu_psig
+#define ktrev_udata	ktrev_data.ktrevu_udata
+};
+
+static int  cmp_fd(const struct arg *, const struct arg *);
+static int  cmp_sc(const struct arg *, const struct arg *);
+static int  cmp_sig(const struct arg *, const struct arg *);
+static int  numcmp(int, int);
+static int  show(struct arg_head *, struct arg_head *, const void *,
+		int (*)(const struct arg *, const struct arg *));
+static void add_arg(int, struct arg_head *, char *);
+static void loop(int);
+static void pr_psig(struct ktr_event *);
+static void pr_syscall(struct ktr_event *);
+static void usage(void) __attribute__((__noreturn__));
+
+static pid_t	  attach_pid;
+static int	  show_count;
+static int	  show_args;
+static int	  show_env;
+static int	  show_intr_once;
+static int	  datefmt;
+static char	 *outfn;
+static char	**scnams;
+
+static struct arg_head hd_sc_show, hd_sc_xshow;
+static struct arg_head hd_sc_stop, hd_sc_xstop;
+static struct arg_head hd_sc_verbose, hd_sc_xverbose;
+static struct arg_head hd_sc_raw, hd_sc_xraw;
+static struct arg_head hd_sig_show, hd_sig_xshow;
+static struct arg_head hd_sig_stop, hd_sig_xstop;
+static struct arg_head hd_mf_show, hd_mf_xshow;
+static struct arg_head hd_mf_stop, hd_mf_xstop;
+static struct arg_head hd_fd_read, hd_fd_xread;
+static struct arg_head hd_fd_write, hd_fd_xwrite;
 
 int
 main(int argc, char *argv[])
 {
-	int c, fds[2], flags = 0;
+	int c, fds[2], trpoints = 0, ops = 0;
 	long l;
 
 	while ((c = getopt(argc, argv,
@@ -73,7 +110,8 @@ main(int argc, char *argv[])
 			show_env = 1;
 			break;
 		case 'f':
-			flags |= KTRFLAG_DESCEND;
+			ops |= KTRFLAG_DESCEND;
+			trpoints |= KTRFAC_INHERIT;
 			break;
 		case 'i':
 			show_intr_once = 1;
@@ -152,7 +190,6 @@ main(int argc, char *argv[])
 
 	if (pipe(fds) == -1)
 		err(1, "pipe");
-
 	if (!attach_pid) {
 		switch (attach_pid = fork()) {
 		case -1:
@@ -160,8 +197,8 @@ main(int argc, char *argv[])
 			/* NOTREACHED */
 		case 0:
 			(void)close(fds[0]);
-			if (fktrace(fds[1], KTROP_SET | flags,
-			    KTRFAC_SYSCALL | KTRFAC_PSIG,
+			if (fktrace(fds[1], KTROP_SET | ops,
+			    KTRFAC_SYSCALL | KTRFAC_PSIG | trpoints,
 			    attach_pid) == -1)
 				err(1, "fktrace");
 			execvp(*argv, argv);
@@ -174,7 +211,10 @@ main(int argc, char *argv[])
 	exit(0);
 }
 
-void
+/*
+ * Add an argument to a list.
+ */
+static void
 add_arg(int type, struct arg_head *hd, char *s)
 {
 	struct arg *a;
@@ -192,31 +232,37 @@ add_arg(int type, struct arg_head *hd, char *s)
 			     l > PID_MAX)
 			a->arg_fd = (pid_t)l;
 			break;
-		default:
-			a->arg_name = s;
+		case AT_SC:
+			a->arg_sc = s;
+			break;
+		case AT_SIG:
+			a->arg_sig = s;
 			break;
 		}
 		SLIST_INSERT_HEAD(hd, a, arg_next);
 	}
 }
 
-void
+/*
+ * Main system call/signal/etc. dispatcher loop.
+ */
+static void
 loop(int fd)
 {
-	struct ktr_event kev;
+	struct ktr_event k;
 	ssize_t n;
 
-	while ((n = read(fd, &kev.kev_hdr, sizeof(kev.kev_hdr))) ==
-	    sizeof(kev.kev_hdr)) {
-		if (read(fd, &kev.kev_udata, kev.kev_hdr.ktr_len) !=
-		    kev.kev_hdr.ktr_len)
+	while ((n = read(fd, &k.ktrev_hdr, sizeof(k.ktrev_hdr))) ==
+	    sizeof(k.ktrev_hdr)) {
+		if (read(fd, &k.ktrev_udata,
+		    k.ktrev_hdr.ktr_len) != k.ktrev_hdr.ktr_len)
 			err(1, "read");
-		switch (kev.kev_hdr.ktr_type) {
+		switch (k.ktrev_hdr.ktr_type) {
 		case KTR_SYSCALL:
-			pr_syscall(&kev);
+			pr_syscall(&k);
 			break;
 		case KTR_PSIG:
-			pr_psig(&kev);
+			pr_psig(&k);
 			break;
 		}
 	}
@@ -224,40 +270,144 @@ loop(int fd)
 		err(1, "read");
 }
 
-void
-pr_syscall(struct ktr_event *kev)
+/*
+ * Print out a system call.
+ */
+static void
+pr_syscall(struct ktr_event *k)
 {
-	struct arg *a;
-	int show = 1;
+	struct ktr_syscall sc = k->ktrev_syscall;
 	char *scnam;
 
-	scnam = emul->sysnames[sc->ktr_code];
-	if (hd_sc_show.slh_first != NULL) {
-		show = 0;
-		SLIST_FOREACH(a, &hd_sc_show, arg_next)
-			if (strcmp(a->arg_name, scnam) == 0) {
-				show = 1;
-				break;
-			}
-	}
-	if (hd_sc_xshow.slh_first != NULL) {
-		SLIST_FOREACH(a, &hd_sc_xshow, arg_next)
-			if (strcmp(a->arg_name, scnam) == 0) {
-				show = 0;
-				break;
-			}
-	}
-	if (!show)
+	scnam = scnams[sc.ktr_code];
+	if (!show(&hd_sc_show, &hd_sc_xshow, scnam, cmp_sc))
 		return;
 	(void)fprintf(stderr, "%s\n", scnam);
 }
 
-void
-pr_psig(struct ktr_psig *sig)
+/*
+ * Determine if an event should be shown or not depending on the
+ * command-line argument lists.
+ */
+static int
+show(struct arg_head *showlh, struct arg_head *xshowlh, const void *arg,
+    int (*fcmp)(const struct arg *, const struct arg *))
 {
+	struct arg *a;
+	int show;
+
+	show = 1;
+	if (!SLIST_EMPTY(showlh)) {
+		show = 0;
+		SLIST_FOREACH(a, showlh, arg_next)
+			if ((*fcmp)(a, arg) == 0) {
+				show = 1;
+				break;
+			}
+	}
+	if (!SLIST_EMPTY(xshowlh)) {
+		SLIST_FOREACH(a, xshowlh, arg_next)
+			if ((*fcmp)(a, arg) == 0) {
+				show = 0;
+				break;
+			}
+	}
+	return (show);
 }
 
-void
+/*
+ * Compare two system calls names.
+ */
+static int
+cmp_sc(const struct arg *a, const struct arg *b)
+{
+	return (strcmp(a->arg_sc, b->arg_sc));
+}
+
+/*
+ * Compare two signal names.
+ */
+static int
+cmp_sig(const struct arg *a, const struct arg *b)
+{
+	return (strcmp(a->arg_sig, b->arg_sig));
+}
+
+/*
+ * Compare two file descriptor numbers.
+ */
+static int
+cmp_fd(const struct arg *a, const struct arg *b)
+{
+	return (numcmp(a->arg_fd, b->arg_fd));
+}
+
+/*
+ * Compare two numbers.
+ */
+static int
+numcmp(int a, int b)
+{
+	return (a < b ? 1 : (a == b ? 0 : -1));
+}
+
+/*
+ * Print out a signal.
+ */
+static void
+pr_psig(struct ktr_event *k)
+{
+	struct sig {
+		int	 sig_num;
+		char	*sig_nam;
+	} *s, sigs[] = {
+		{ SIGHUP,	"HUP" },
+		{ SIGINT,	"INT" },
+		{ SIGQUIT,	"QUIT" },
+		{ SIGILL,	"ILL" },
+		{ SIGABRT,	"ABRT" },
+		{ SIGFPE,	"FPE" },
+		{ SIGKILL,	"KILL" },
+		{ SIGSEGV,	"SEGV" },
+		{ SIGPIPE,	"PIPE" },
+		{ SIGALRM,	"ARLM" },
+		{ SIGTERM,	"TERM" },
+		{ SIGSTOP,	"STOP" },
+		{ SIGTSTP,	"TSTP" },
+		{ SIGCONT,	"CONT" },
+		{ SIGCHLD,	"CHLD" },
+		{ SIGTTIN,	"TTIN" },
+		{ SIGTTOU,	"TTOU" },
+		{ SIGUSR1,	"USR1" },
+		{ SIGUSR2,	"USR2" },
+#ifndef _POSIX_SOURCE
+		{ SIGTRAP,	"TRAP" },
+		{ SIGEMT,	"EMT" },
+		{ SIGBUS,	"BUS" },
+		{ SIGSYS,	"SYS" },
+		{ SIGURG,	"URG" },
+		{ SIGIO,	"IO" },
+		{ SIGXCPU,	"XCPU" },
+		{ SIGXFSZ,	"XFSZ" },
+		{ SIGVTALRM,	"VTARLM" },
+		{ SIGPROF,	"PROF" },
+		{ SIGWINCH, 	"WINCH" },
+		{ SIGINFO, 	"INFO" },
+#endif
+		{ 0, NULL }
+	};
+
+	for (s = sigs; s->sig_nam != NULL; s++)
+		if (s->sig_num == k->ktrev_psig.signo) {
+			if (!show(&hd_sig_show, &hd_sig_xshow,
+			    &k->ktrev_psig.signo, cmp_sig))
+				return;
+			(void)fprintf(stderr, "SIG%s\n", s->sig_nam);
+			break;
+		}
+}
+
+static void
 usage(void)
 {
 	extern char *__progname;

@@ -34,7 +34,8 @@ int	 show_args;
 int	 show_env;
 int	 show_intr_once;
 int	 datefmt;
-char	*outfile;
+char	*outfn;
+FILE	*outfp;
 
 struct arg_head	hd_sc_show, hd_sc_xshow;
 struct arg_head hd_sc_stop, hd_sc_xstop;
@@ -78,7 +79,7 @@ main(int argc, char *argv[])
 			show_intr_once = 1;
 			break;
 		case 'o':
-			outfile = optarg;
+			outfn = optarg;
 			break;
 		case 'p':
 			if ((l = strtoul(optarg, NULL, 10)) < 0 ||
@@ -145,9 +146,9 @@ main(int argc, char *argv[])
 	if ((attach_pid && argc) || (!attach_pid && !argc))
 		usage();
 
-	if (outfile != NULL)
-		if (freopen(outfile, "w", stderr) == NULL)
-			err(1, "%s", outfile);
+	if (outfn != NULL)
+		if (freopen(outfn, "w", stderr) == NULL)
+			err(1, "%s", outfn);
 
 	if (pipe(fds) == -1)
 		err(1, "pipe");
@@ -202,19 +203,20 @@ add_arg(int type, struct arg_head *hd, char *s)
 void
 loop(int fd)
 {
-	struct ktr_header khdr;
-	union ktrev ktev;
+	struct ktr_event kev;
 	ssize_t n;
 
-	while ((n = read(fd, &khdr, sizeof(khdr))) == sizeof(khdr)) {
-		if (read(fd, &ktev, khdr.ktr_len) != khdr.ktr_len)
+	while ((n = read(fd, &kev.kev_hdr, sizeof(kev.kev_hdr))) ==
+	    sizeof(kev.kev_hdr)) {
+		if (read(fd, &kev.kev_udata, kev.kev_hdr.ktr_len) !=
+		    kev.kev_hdr.ktr_len)
 			err(1, "read");
-		switch (khdr.ktr_type) {
+		switch (kev.kev_hdr.ktr_type) {
 		case KTR_SYSCALL:
-			pr_syscall(&ktev.ktev_syscall);
+			pr_syscall(&kev);
 			break;
 		case KTR_PSIG:
-			pr_psig(&ktev.ktev_psig);
+			pr_psig(&kev);
 			break;
 		}
 	}
@@ -223,7 +225,7 @@ loop(int fd)
 }
 
 void
-pr_syscall(struct ktr_syscall *sc)
+pr_syscall(struct ktr_event *kev)
 {
 	struct arg *a;
 	int show = 1;

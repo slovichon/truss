@@ -190,8 +190,13 @@ main(int argc, char *argv[])
 
 	if (pipe(fds) == -1)
 		err(1, "pipe");
-	if (!attach_pid) {
-		switch (attach_pid = fork()) {
+	if (attach_pid) {
+		if (fktrace(fds[1], KTROP_SET | ops,
+		    KTRFAC_SYSCALL | KTRFAC_PSIG | trpoints,
+		    attach_pid) == -1)
+			err(1, "fktrace");
+	} else {
+		switch (fork()) {
 		case -1:
 			err(1, "fork");
 			/* NOTREACHED */
@@ -199,8 +204,9 @@ main(int argc, char *argv[])
 			(void)close(fds[0]);
 			if (fktrace(fds[1], KTROP_SET | ops,
 			    KTRFAC_SYSCALL | KTRFAC_PSIG | trpoints,
-			    attach_pid) == -1)
+			    getpid()) == -1)
 				err(1, "fktrace");
+			/* (void)close(fds[1]); */
 			execvp(*argv, argv);
 			err(1, "execvp");
 			/* NOTREACHED */

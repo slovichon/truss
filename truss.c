@@ -158,14 +158,18 @@ main(int argc, char *argv[])
 			err(1, "fork");
 			/* NOTREACHED */
 		case 0:
+			(void)close(fds[0]);
+			if (fktrace(fds[1], KTROP_SET | flags,
+			    KTRFAC_SYSCALL | KTRFAC_PSIG,
+			    attach_pid) == -1)
+				err(1, "fktrace");
 			execvp(*argv, argv);
 			err(1, "execvp");
 			/* NOTREACHED */
 		}
 	}
-	ktrace_fd(fds[1], KTROP_SET | flags,
-	    KTRFAC_SYSCALL | KTRFRAC_PSIG, attach_pid);
-//	loop(fds[0]);
+	(void)close(fds[1]);
+	loop(fds[0]);
 	exit(0);
 }
 
@@ -221,6 +225,29 @@ loop(int fd)
 void
 pr_syscall(struct ktr_syscall *sc)
 {
+	struct arg *a;
+	int show = 1;
+	char *scnam;
+
+	scnam = emul->sysnames[sc->ktr_code];
+	if (hd_sc_show.slh_first != NULL) {
+		show = 0;
+		SLIST_FOREACH(a, &hd_sc_show, arg_next)
+			if (strcmp(a->arg_name, scnam) == 0) {
+				show = 1;
+				break;
+			}
+	}
+	if (hd_sc_xshow.slh_first != NULL) {
+		SLIST_FOREACH(a, &hd_sc_xshow, arg_next)
+			if (strcmp(a->arg_name, scnam) == 0) {
+				show = 0;
+				break;
+			}
+	}
+	if (!show)
+		return;
+	(void)fprintf(stderr, "%s\n", scnam);
 }
 
 void

@@ -1,6 +1,8 @@
 /* $Id$ */
 
-#include <sys/types.h>
+#include <sys/param.h>
+#include <sys/uio.h>
+#include <sys/ktrace.h>
 #include <sys/queue.h>
 
 #include <err.h>
@@ -8,6 +10,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 #include "truss.h"
 
@@ -18,11 +21,14 @@
 #define AT_SIG	2
 #define AT_MF	3
 
-static void usage(void) __attribute__((__noreturn__));
-static void add_arg(int, struct arg_head *, char *);
+void add_arg(int, struct arg_head *, char *);
+void loop(int);
+void pr_psig(struct ktr_psig *);
+void pr_syscall(struct ktr_syscall *);
+void trace(void);
+void usage(void) __attribute__((__noreturn__));
 
 pid_t	 attach_pid;
-int	 follow_fork;
 int	 show_count;
 int	 show_args;
 int	 show_env;
@@ -44,8 +50,8 @@ struct arg_head hd_fd_write, hd_fd_xwrite;
 int
 main(int argc, char *argv[])
 {
+	int c, fds[2], flags = 0;
 	long l;
-	int c;
 
 	while ((c = getopt(argc, argv,
 	    "acDdefio:p:r:S:s:T:t:v:w:x:")) != -1) {
@@ -66,7 +72,7 @@ main(int argc, char *argv[])
 			show_env = 1;
 			break;
 		case 'f':
-			follow_fork = 1;
+			flags |= KTRFLAG_DESCEND;
 			break;
 		case 'i':
 			show_intr_once = 1;
@@ -136,13 +142,30 @@ main(int argc, char *argv[])
 	argc -= optind;
 	argv += optind;
 
-	if (attach_pid) {
-		if (argc)
-			usage();
-	} else if (!argc)
+	if ((attach_pid && argc) || (!attach_pid && !argc))
 		usage();
-	else {
+
+	if (outfile != NULL)
+		if (freopen(outfile, "w", stderr) == NULL)
+			err(1, "%s", outfile);
+
+	if (pipe(fds) == -1)
+		err(1, "pipe");
+
+	if (!attach_pid) {
+		switch (attach_pid = fork()) {
+		case -1:
+			err(1, "fork");
+			/* NOTREACHED */
+		case 0:
+			execvp(*argv, argv);
+			err(1, "execvp");
+			/* NOTREACHED */
+		}
 	}
+	ktrace_fd(fds[1], KTROP_SET | flags,
+	    KTRFAC_SYSCALL | KTRFRAC_PSIG, attach_pid);
+//	loop(fds[0]);
 	exit(0);
 }
 
@@ -173,16 +196,49 @@ add_arg(int type, struct arg_head *hd, char *s)
 }
 
 void
+loop(int fd)
+{
+	struct ktr_header khdr;
+	union ktrev ktev;
+	ssize_t n;
+
+	while ((n = read(fd, &khdr, sizeof(khdr))) == sizeof(khdr)) {
+		if (read(fd, &ktev, khdr.ktr_len) != khdr.ktr_len)
+			err(1, "read");
+		switch (khdr.ktr_type) {
+		case KTR_SYSCALL:
+			pr_syscall(&ktev.ktev_syscall);
+			break;
+		case KTR_PSIG:
+			pr_psig(&ktev.ktev_psig);
+			break;
+		}
+	}
+	if (n == -1)
+		err(1, "read");
+}
+
+void
+pr_syscall(struct ktr_syscall *sc)
+{
+}
+
+void
+pr_psig(struct ktr_psig *sig)
+{
+}
+
+void
 usage(void)
 {
 	extern char *__progname;
 
 	(void)fprintf(stderr,
-	    "usage: %s [-acDdefi] [-o file] [-r fds] [-S sigs]\n"
-	    "\t     [-s sigs] [-T syscalls] [-t syscalls] [-v syscalls] [-w fds]\n"
-	    "\t     [-x syscalls] command [argument ...]\n"
-	    "       %s [-acDdefi] [-o file] [-r fds] [-S sigs]\n"
-	    "\t     [-s sigs] [-T syscalls] [-t syscalls] [-v syscalls] [-w fds]\n"
-	    "\t     [-x syscalls] -p pid\n", __progname, __progname);
+	    "usage: %s [-acDdefi] [-o file] [-r fds] [-S sigs] [-s sigs] [-T syscalls]\n"
+	    "\t     [-t syscalls] [-v syscalls] [-w fds] [-x syscalls] command\n"
+	    "\t     [argument ...]\n"
+	    "       %s [-acDdefi] [-o file] [-r fds] [-S sigs] [-s sigs] [-T syscalls]\n"
+	    "\t     [-t syscalls] [-v syscalls] [-w fds] [-x syscalls] -p pid\n",
+	    __progname, __progname);
 	exit(1);
 }

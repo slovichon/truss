@@ -11,14 +11,19 @@
 
 struct arg {
 	union {
-		char			*argv_name;
-		int			 argv_fd;
+		char	*argv_name;
+		int	 argv_fd;
 	} arg_value;
-	SLIST_ENTRY(arg)	 	 arg_next;
-#define arg_name	arg_value.argv_name
-#define arg_fd		arg_value.argv_fd
+	SLIST_ENTRY(arg) arg_next;
+#define arg_name arg_value.argv_name
+#define arg_fd	 arg_value.argv_fd
 };
 SLIST_HEAD(arg_head, arg);
+
+union ktrev {
+	struct ktr_syscall	ktev_syscall;
+	struct ktr_psig		ktev_psig;
+};
 
 extern pid_t	 attach_pid;
 extern int	 follow_fork;

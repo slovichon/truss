@@ -1,0 +1,62 @@
+.\" $Id$
+.Dd Oct 22, 2004
+.Dt TRUSS 1
+.Os
+.Sh NAME
+.Nm truss
+.Nd trace system calls
+.Sh SYNOPSIS
+.Nm truss
+.Op Fl acDdefi
+.Op Fl o Ar file
+.Op Fl r Ar fds
+.Op Fl S Ar sigs
+.Bk -words
+.Op Fl s Ar sigs
+.Ek
+.Op Fl T Ar syscalls
+.Op Fl t Ar syscalls
+.Op Fl v Ar syscalls
+.Op Fl w Ar fds
+.Bk -words
+.Op Fl x Ar syscalls
+.Ek
+.Ar command
+.Op Ar argument ...
+.Nm truss
+.Op Fl acDdefi
+.Op Fl o Ar file
+.Op Fl r Ar fds
+.Op Fl S Ar sigs
+.Bk -words
+.Op Fl s Ar sigs
+.Ek
+.Op Fl T Ar syscalls
+.Op Fl t Ar syscalls
+.Op Fl v Ar syscalls
+.Op Fl w Ar fds
+.Bk -words
+.Op Fl x Ar syscalls
+.Ek
+.Fl p Ar pid
+.Sh DESCRIPTION
+The
+.Nm
+utility traces the system calls made by another process.
+.Nm
+can attach to a live process or start a new one and attach to it
+immediately.
+.Sh SEE ALSO
+.Xr ktrace 1 ,
+.Xr ps 1 ,
+.Xr fork 2 ,
+.Xr open 2 ,
+.Xr read 2 ,
+.Xr write 2 ,
+.Xr signal 3
+.Sh HISTORY
+The
+.Nm
+first appeared in SunOS.
+This version first appeared in
+.Ox 3.8 .

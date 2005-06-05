@@ -5,10 +5,12 @@
 #include <sys/ktrace.h>
 #include <sys/queue.h>
 #include <sys/syscall.h>
+#include <sys/sysctl.h>
 
 // #include <kern/syscalls.c>
 
 #include <err.h>
+#include <errno.h>
 #include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -53,44 +55,46 @@ struct ktr_event {
 #define ktrev_udata	ktrev_data.ktrevu_udata
 };
 
-static int  cmp_fd(const struct arg *, const struct arg *);
-static int  cmp_sc(const struct arg *, const struct arg *);
-static int  cmp_sig(const struct arg *, const struct arg *);
-static int  numcmp(int, int);
-static int  show(struct arg_head *, struct arg_head *, const void *,
-		int (*)(const struct arg *, const struct arg *));
-static void add_arg(int, struct arg_head *, char *);
-static void loop(int);
-static void pr_psig(struct ktr_event *);
-static void pr_syscall(struct ktr_event *);
-static void usage(void) __attribute__((__noreturn__));
+int		  cmp_fd(const struct arg *, const struct arg *);
+int		  cmp_sc(const struct arg *, const struct arg *);
+int		  cmp_sig(const struct arg *, const struct arg *);
+int		  numcmp(int, int);
+int		  show(struct arg_head *, struct arg_head *, const void *,
+    int (*)(const struct arg *, const struct arg *));
+void		  add_arg(int, struct arg_head *, char *);
+void		  loop(int);
+void		  pr_psig(struct ktr_event *);
+void		  pr_syscall(struct ktr_event *);
+void		  dumpargs(int);
+__dead void	  usage(void);
 
-static pid_t	  attach_pid;
-static int	  show_count;
-static int	  show_args;
-static int	  show_env;
-static int	  show_intr_once;
-static int	  datefmt;
-static char	 *outfn;
-static char	**scnams;
+pid_t		  attach_pid;
+int		  show_count;
+int		  show_args;
+int		  show_env;
+int		  show_intr_once;
+int		  datefmt;
+char		 *outfn;
+char		**scnams;
 
-static struct arg_head hd_sc_show, hd_sc_xshow;
-static struct arg_head hd_sc_stop, hd_sc_xstop;
-static struct arg_head hd_sc_verbose, hd_sc_xverbose;
-static struct arg_head hd_sc_raw, hd_sc_xraw;
-static struct arg_head hd_sig_show, hd_sig_xshow;
-static struct arg_head hd_sig_stop, hd_sig_xstop;
-static struct arg_head hd_mf_show, hd_mf_xshow;
-static struct arg_head hd_mf_stop, hd_mf_xstop;
-static struct arg_head hd_fd_read, hd_fd_xread;
-static struct arg_head hd_fd_write, hd_fd_xwrite;
+struct arg_head hd_sc_show, hd_sc_xshow;
+struct arg_head hd_sc_stop, hd_sc_xstop;
+struct arg_head hd_sc_verbose, hd_sc_xverbose;
+struct arg_head hd_sc_raw, hd_sc_xraw;
+struct arg_head hd_sig_show, hd_sig_xshow;
+struct arg_head hd_sig_stop, hd_sig_xstop;
+struct arg_head hd_mf_show, hd_mf_xshow;
+struct arg_head hd_mf_stop, hd_mf_xstop;
+struct arg_head hd_fd_read, hd_fd_xread;
+struct arg_head hd_fd_write, hd_fd_xwrite;
 
 int
 main(int argc, char *argv[])
 {
-	int c, fds[2], trpoints = 0, ops = 0;
+	int pid, c, fds[2], trpoints, ops;
 	long l;
 
+	trpoints = ops = 0;
 	while ((c = getopt(argc, argv,
 	    "acDdefio:p:r:S:s:T:t:v:w:x:")) != -1) {
 		switch (c) {
@@ -191,21 +195,30 @@ main(int argc, char *argv[])
 	if (pipe(fds) == -1)
 		err(1, "pipe");
 	if (attach_pid) {
+		if (show_args)
+			dump_pss(attach_pid, KERN_PROC_ARGV);
+		if (show_env)
+			dump_pss(attach_pid, KERN_PROC_ENV);
+/*
 		if (fktrace(fds[1], KTROP_SET | ops,
 		    KTRFAC_SYSCALL | KTRFAC_PSIG | trpoints,
 		    attach_pid) == -1)
 			err(1, "fktrace");
+*/
 	} else {
-		switch (fork()) {
+		pid = fork();
+		switch (pid) {
 		case -1:
 			err(1, "fork");
 			/* NOTREACHED */
 		case 0:
-			(void)close(fds[0]);
+/*
 			if (fktrace(fds[1], KTROP_SET | ops,
 			    KTRFAC_SYSCALL | KTRFAC_PSIG | trpoints,
 			    getpid()) == -1)
 				err(1, "fktrace");
+*/
+//argv[0]="/bin/echo";
 			/* (void)close(fds[1]); */
 			execvp(*argv, argv);
 			err(1, "execvp");
@@ -217,10 +230,40 @@ main(int argc, char *argv[])
 	exit(0);
 }
 
+void
+dump_pss(int pid, int what)
+{
+	int mib[4], nargs;
+	char **p, **s;
+	size_t siz;
+
+	s = NULL;
+	siz = 100;
+	for (;; siz *= 2) {
+		if ((s = realloc(s, siz)) == NULL)
+			err(1, "malloc");
+
+		mib[0] = CTL_KERN;
+		mib[1] = KERN_PROC_ARGS;
+		mib[2] = pid;
+		mib[3] = what;
+		if (sysctl(mib, 4, s, &siz, NULL, 0) == 0)
+			break;
+		if (errno != ENOMEM)
+			err(1, "sysctl");
+	}
+
+	fprintf(stderr, "psargs: %s", *s);
+	for (p = s; *++p != NULL; )
+		fprintf(stderr, " %s", *p);
+	fprintf(stderr, "\n");
+	free(s);
+}
+
 /*
  * Add an argument to a list.
  */
-static void
+void
 add_arg(int type, struct arg_head *hd, char *s)
 {
 	struct arg *a;
@@ -252,7 +295,7 @@ add_arg(int type, struct arg_head *hd, char *s)
 /*
  * Main system call/signal/etc. dispatcher loop.
  */
-static void
+void
 loop(int fd)
 {
 	struct ktr_event k;
@@ -279,7 +322,7 @@ loop(int fd)
 /*
  * Print out a system call.
  */
-static void
+void
 pr_syscall(struct ktr_event *k)
 {
 	struct ktr_syscall sc = k->ktrev_syscall;
@@ -295,7 +338,7 @@ pr_syscall(struct ktr_event *k)
  * Determine if an event should be shown or not depending on the
  * command-line argument lists.
  */
-static int
+int
 show(struct arg_head *showlh, struct arg_head *xshowlh, const void *arg,
     int (*fcmp)(const struct arg *, const struct arg *))
 {
@@ -324,7 +367,7 @@ show(struct arg_head *showlh, struct arg_head *xshowlh, const void *arg,
 /*
  * Compare two system calls names.
  */
-static int
+int
 cmp_sc(const struct arg *a, const struct arg *b)
 {
 	return (strcmp(a->arg_sc, b->arg_sc));
@@ -333,7 +376,7 @@ cmp_sc(const struct arg *a, const struct arg *b)
 /*
  * Compare two signal names.
  */
-static int
+int
 cmp_sig(const struct arg *a, const struct arg *b)
 {
 	return (strcmp(a->arg_sig, b->arg_sig));
@@ -342,7 +385,7 @@ cmp_sig(const struct arg *a, const struct arg *b)
 /*
  * Compare two file descriptor numbers.
  */
-static int
+int
 cmp_fd(const struct arg *a, const struct arg *b)
 {
 	return (numcmp(a->arg_fd, b->arg_fd));
@@ -351,7 +394,7 @@ cmp_fd(const struct arg *a, const struct arg *b)
 /*
  * Compare two numbers.
  */
-static int
+int
 numcmp(int a, int b)
 {
 	return (a < b ? 1 : (a == b ? 0 : -1));
@@ -360,7 +403,7 @@ numcmp(int a, int b)
 /*
  * Print out a signal.
  */
-static void
+void
 pr_psig(struct ktr_event *k)
 {
 	struct sig {
@@ -413,7 +456,7 @@ pr_psig(struct ktr_event *k)
 		}
 }
 
-static void
+void
 usage(void)
 {
 	extern char *__progname;

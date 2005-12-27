@@ -62,7 +62,7 @@ int		  numcmp(int, int);
 int		  show(struct arg_head *, struct arg_head *, const void *,
     int (*)(const struct arg *, const struct arg *));
 void		  add_arg(int, struct arg_head *, char *);
-void		  loop(int);
+void		  dump(int);
 void		  pr_psig(struct ktr_event *);
 void		  pr_syscall(struct ktr_event *);
 void		  dumpargs(int);
@@ -192,41 +192,27 @@ main(int argc, char *argv[])
 		if (freopen(outfn, "w", stderr) == NULL)
 			err(1, "%s", outfn);
 
-	if (pipe(fds) == -1)
-		err(1, "pipe");
-	if (attach_pid) {
-		if (show_args)
-			dump_pss(attach_pid, KERN_PROC_ARGV);
-		if (show_env)
-			dump_pss(attach_pid, KERN_PROC_ENV);
-/*
-		if (fktrace(fds[1], KTROP_SET | ops,
-		    KTRFAC_SYSCALL | KTRFAC_PSIG | trpoints,
-		    attach_pid) == -1)
-			err(1, "fktrace");
-*/
-	} else {
-		pid = fork();
-		switch (pid) {
+	if (!attach_pid) {
+		attach_pid = fork();
+		switch (attach_pid) {
 		case -1:
 			err(1, "fork");
 			/* NOTREACHED */
 		case 0:
-/*
-			if (fktrace(fds[1], KTROP_SET | ops,
-			    KTRFAC_SYSCALL | KTRFAC_PSIG | trpoints,
-			    getpid()) == -1)
-				err(1, "fktrace");
-*/
-//argv[0]="/bin/echo";
 			/* (void)close(fds[1]); */
 			execvp(*argv, argv);
 			err(1, "execvp");
 			/* NOTREACHED */
 		}
 	}
-	(void)close(fds[1]);
-	loop(fds[0]);
+	if (pipe(fds) == -1)
+		err(1, "pipe");
+	if (fktrace(fds[1], KTROP_SET | ops,
+	    KTRFAC_SYSCALL | KTRFAC_PSIG | trpoints,
+	    attach_pid) == -1)
+		err(1, "fktrace");
+printf("entering dump()\n");
+	dump(fds[0]);
 	exit(0);
 }
 
@@ -296,13 +282,14 @@ add_arg(int type, struct arg_head *hd, char *s)
  * Main system call/signal/etc. dispatcher loop.
  */
 void
-loop(int fd)
+dump(int fd)
 {
 	struct ktr_event k;
 	ssize_t n;
 
 	while ((n = read(fd, &k.ktrev_hdr, sizeof(k.ktrev_hdr))) ==
 	    sizeof(k.ktrev_hdr)) {
+printf("received event\n");
 		if (read(fd, &k.ktrev_udata,
 		    k.ktrev_hdr.ktr_len) != k.ktrev_hdr.ktr_len)
 			err(1, "read");
@@ -470,3 +457,13 @@ usage(void)
 	    __progname, __progname);
 	exit(1);
 }
+
+/*
+emul()
+{
+		if (show_args)
+			dump_pss(attach_pid, KERN_PROC_ARGV);
+		if (show_env)
+			dump_pss(attach_pid, KERN_PROC_ENV);
+}
+*/
